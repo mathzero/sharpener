@@ -1,0 +1,27 @@
+Package: sharpener
+Type: Package
+Title: Utility and Analysis Extensions for sharp
+Version: 0.0.1
+Authors@R: person("mw418", role = c("aut", "cre"))
+Description: Utility functions and analytical helpers that extend the sharp package,
+    including incremental model evaluation and plotting utilities for variable
+    selection workflows.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+Imports:
+    sharp,
+    dplyr,
+    ggplot2,
+    survival,
+    survminer,
+    scales,
+    forcats,
+    patchwork,
+    ggsci,
+    pROC,
+    caret,
+    future,
+    future.apply
+Suggests:
+    OverReact
