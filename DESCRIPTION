@@ -2,7 +2,7 @@ Package: sharpener
 Type: Package
 Title: Utility and Analysis Extensions for sharp
 Version: 0.0.1
-Authors@R: person("mw418", role = c("aut", "cre"))
+Authors@R: person("Matt", "Whitaker", role = c("aut", "cre"))
 Description: Utility functions and analytical helpers that extend the sharp package,
     including incremental model evaluation and plotting utilities for variable
     selection workflows.
