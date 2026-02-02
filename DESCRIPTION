@@ -12,16 +12,14 @@ LazyData: true
 Imports:
     sharp,
     dplyr,
+    magrittr,
     ggplot2,
     survival,
-    survminer,
-    scales,
-    forcats,
-    patchwork,
-    ggsci,
     pROC,
-    caret,
     future,
     future.apply
 Suggests:
-    OverReact
+    OverReact,
+    lme4,
+    lmerTest,
+    ggrepel

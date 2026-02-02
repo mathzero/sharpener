@@ -6,3 +6,5 @@
 *.Rcheck/
 *.Rproj
 .DS_Store
+Rplots.pdf
+.r_libs/

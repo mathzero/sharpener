@@ -1,5 +1,18 @@
-# Demo: sharpener + sharp variable selection pipeline
+---
+title: "sharpener demo"
+format: html
+execute:
+  echo: true
+  warning: false
+  message: false
+---
 
+This demo mirrors `demo/sharpener_demo.R` and shows the incremental pipeline
+for both binomial and Cox outcomes.
+
+```{r}
+#| label: setup
+#| include: false
 suppressPackageStartupMessages({
   library(sharp)
   library(survival)
@@ -8,11 +21,15 @@ suppressPackageStartupMessages({
   library(ggplot2)
 })
 
+source("../R/00_functions.R")
+source("../R/00_univariable_functions.R")
 set.seed(1)
-source("R/00_functions.R")
+```
 
-# ---- 1) Binomial example -------------------------------------------------
+## Binomial example
 
+```{r}
+#| label: binomial-demo
 n <- 200
 p <- 20
 x <- matrix(rnorm(n * p), nrow = n, ncol = p)
@@ -45,13 +62,40 @@ inc_bin <- IncrementalAnalysis(
   verbose = TRUE
 )
 
-print(plot_incremental_roc(
+# Plot multiple ROC tiers on a single panel
+plot_incremental_roc(
   inc_bin,
-  m = "best_test"
-))
+  m = c(3, 5, 8),
+  label_predictors = TRUE,
+  label_style = "added"
+)
+```
 
-# ---- 2) Cox survival example --------------------------------------------
+## Wrapper: VariableSelection + univariableScreen
 
+```{r}
+#| label: wrapper-demo
+both_bin <- runVariableSelectionAndUnivariable(
+  xdata = x,
+  ydata = y_bin,
+  family = "binomial",
+  variable_selection_args = list(K = 20, seed = 1, n_cores = 1, verbose = FALSE),
+  univariable_args = list(ncores = 1, seed = 1, verbose = FALSE)
+)
+
+# Comparison table (top signals by univariable p-value)
+both_bin$comparison %>%
+  dplyr::arrange(p_value_min) %>%
+  dplyr::slice_head(n = 10)
+
+# Volcano plot from univariable results
+plotVolcano(both_bin$univariable, title = "Univariable screen (binomial)")
+```
+
+## Cox survival example
+
+```{r}
+#| label: cox-demo
 set.seed(2)
 
 n2 <- 250
@@ -70,7 +114,6 @@ time_cens <- rexp(n2, rate = cens_rate)
 
 time_obs <- pmin(time_event, time_cens)
 event <- as.integer(time_event <= time_cens)
-
 y_surv <- survival::Surv(time_obs, event)
 
 vs_surv <- sharp::VariableSelection(
@@ -95,8 +138,5 @@ inc_surv <- IncrementalAnalysis(
   verbose = TRUE
 )
 
-surv_plot <- plot_incremental_survival(
-  inc_surv,
-  m_select = "best_test"
-)
-print(surv_plot$plot)
+plot_incremental_survival(inc_surv, m_select = "best_test")$plot
+```

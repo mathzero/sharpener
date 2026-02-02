@@ -18,7 +18,8 @@ IncrementalAnalysis(
   verbose = TRUE,
   ci_level = 0.95,
   roc_points = 101,
-  max_predictors = 40
+  max_predictors = 40,
+  store_data = TRUE
 )
 }
 \arguments{
@@ -34,6 +35,7 @@ IncrementalAnalysis(
 \item{ci_level}{Confidence level for empirical intervals.}
 \item{roc_points}{Number of ROC grid points for binomial outcomes.}
 \item{max_predictors}{Maximum number of predictors to consider.}
+\item{store_data}{Logical; store \code{xdata} and \code{ydata} in the returned object for downstream plotting.}
 }
 \value{
 A list with a summary data frame, per-model details, and optional ROC curve
