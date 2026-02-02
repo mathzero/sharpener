@@ -10,7 +10,7 @@ plotROC_from_ci(
   ci_df,
   title = "ROC",
   subtitle = NULL,
-  ci_label = "95% CI",
+  ci_label = "95 percent CI",
   digits = 3,
   annotate_single = FALSE,
   annotate_pos = c(0.65, 0.15)
