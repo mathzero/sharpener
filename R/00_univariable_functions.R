@@ -48,6 +48,40 @@
   "gaussian"
 }
 
+.resolve_selected_vars <- function(selected_raw, all_names) {
+  if (is.null(selected_raw)) return(character(0))
+
+  if (is.data.frame(selected_raw) || is.matrix(selected_raw)) {
+    vec <- as.numeric(selected_raw)
+    if (length(vec) == length(all_names) && all(vec %in% c(0, 1))) {
+      return(all_names[vec > 0])
+    }
+    return(as.character(vec))
+  }
+
+  if (is.logical(selected_raw)) {
+    if (length(selected_raw) == length(all_names)) {
+      return(all_names[selected_raw])
+    }
+    return(as.character(which(selected_raw)))
+  }
+
+  if (is.numeric(selected_raw)) {
+    if (!is.null(names(selected_raw)) && length(names(selected_raw)) == length(selected_raw)) {
+      return(names(selected_raw)[selected_raw > 0])
+    }
+    if (length(selected_raw) == length(all_names) && all(selected_raw %in% c(0, 1))) {
+      return(all_names[selected_raw > 0])
+    }
+    if (all(selected_raw %in% seq_len(length(all_names)))) {
+      return(all_names[selected_raw])
+    }
+    return(as.character(selected_raw))
+  }
+
+  as.character(selected_raw)
+}
+
 .build_model_frame <- function(xdata, ydata, covariates = NULL, data = NULL) {
   xdf <- as.data.frame(xdata)
   if (nrow(xdf) == 0L) stop("xdata has zero rows.")
@@ -364,12 +398,31 @@ runVariableSelectionAndUnivariable <- function(xdata,
     selprop <- as.numeric(selprop_raw)
     names(selprop) <- names(selprop_raw)
   }
+  if (is.null(names(selprop)) || all(names(selprop) == "")) {
+    if (length(selprop) == ncol(prep$xdata)) {
+      names(selprop) <- colnames(prep$xdata)
+    }
+  }
 
-  selected <- sharp::SelectedVariables(vs)
-  selected <- as.character(selected)
+  all_names <- colnames(prep$xdata)
+  if (is.null(all_names) || all(all_names == "")) {
+    all_names <- names(selprop)
+    if (is.null(all_names) || all(all_names == "")) {
+      all_names <- paste0("V", seq_len(ncol(prep$xdata)))
+    }
+  }
+  predictor_names <- names(selprop)
+  if (is.null(predictor_names) || all(predictor_names == "")) {
+    predictor_names <- all_names
+    if (length(predictor_names) != length(selprop)) {
+      predictor_names <- paste0("V", seq_along(selprop))
+    }
+  }
+
+  selected <- .resolve_selected_vars(sharp::SelectedVariables(vs), all_names)
 
   comp <- tibble::tibble(
-    predictor = names(selprop),
+    predictor = predictor_names,
     selection_proportion = as.numeric(selprop),
     selected = predictor %in% selected
   ) %>%

@@ -140,3 +140,8 @@ inc_surv <- IncrementalAnalysis(
 
 plot_incremental_survival(inc_surv, m_select = "best_test")$plot
 ```
+
+```{r}
+plot_incremental_roc(inc_surv, m_select = "best_test",time = 10)
+
+```

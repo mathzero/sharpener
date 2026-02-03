@@ -182,8 +182,37 @@ IncrementalAnalysis <- function(xdata, ydata, n_predictors = NULL, stability = N
     selprop <- selprop[!is.na(selprop)]
     selprop <- sort(selprop, decreasing = TRUE)
 
-    selected_vars <- sharp::SelectedVariables(stability)
-    selected_vars <- as.character(selected_vars)
+    selected_vars_raw <- sharp::SelectedVariables(stability)
+    selected_vars <- character(0)
+    all_names <- colnames(xdf)
+    if (is.null(selected_vars_raw)) {
+      selected_vars <- character(0)
+    } else if (is.data.frame(selected_vars_raw) || is.matrix(selected_vars_raw)) {
+      vec <- as.numeric(selected_vars_raw)
+      if (length(vec) == length(all_names) && all(vec %in% c(0, 1))) {
+        selected_vars <- all_names[vec > 0]
+      } else {
+        selected_vars <- as.character(vec)
+      }
+    } else if (is.logical(selected_vars_raw)) {
+      if (length(selected_vars_raw) == length(all_names)) {
+        selected_vars <- all_names[selected_vars_raw]
+      } else {
+        selected_vars <- as.character(which(selected_vars_raw))
+      }
+    } else if (is.numeric(selected_vars_raw)) {
+      if (!is.null(names(selected_vars_raw)) && length(names(selected_vars_raw)) == length(selected_vars_raw)) {
+        selected_vars <- names(selected_vars_raw)[selected_vars_raw > 0]
+      } else if (length(selected_vars_raw) == length(all_names) && all(selected_vars_raw %in% c(0, 1))) {
+        selected_vars <- all_names[selected_vars_raw > 0]
+      } else if (all(selected_vars_raw %in% seq_len(length(all_names)))) {
+        selected_vars <- all_names[selected_vars_raw]
+      } else {
+        selected_vars <- as.character(selected_vars_raw)
+      }
+    } else {
+      selected_vars <- as.character(selected_vars_raw)
+    }
 
     all_beta_names <- NULL
     if (!is.null(stability$Beta)) {
@@ -576,6 +605,7 @@ plot_incremental_roc <- function(incremental_res,
                                  m = NULL,
                                  m_select = c("best_test", "best_train"),
                                  which = c("test", "train"),
+                                 time = NULL,
                                  labels = NULL,
                                  label_predictors = FALSE,
                                  label_style = c("full", "added"),
@@ -591,6 +621,9 @@ plot_incremental_roc <- function(incremental_res,
   which <- match.arg(which)
   label_style <- match.arg(label_style)
 
+  fam <- incremental_res$call$family %||% if (!is.null(incremental_res$ydata) && inherits(incremental_res$ydata, "Surv")) "cox" else "binomial"
+  if (fam %in% c("coxph", "survival")) fam <- "cox"
+
   m_vec <- .resolve_m(incremental_res, m, m_select)
   label_vec <- .labels_for_m(
     m_vec,
@@ -603,7 +636,186 @@ plot_incremental_roc <- function(incremental_res,
   )
 
   ci_df_all <- if (which == "test") incremental_res$roc_ci else incremental_res$roc_ci_train
-  if (is.null(ci_df_all)) stop("ROC data not available; binomial outcome required.")
+  if (is.null(ci_df_all) && fam == "cox") {
+    if (is.null(time) || length(time) != 1L || !is.numeric(time) || is.na(time)) {
+      stop("time must be a single numeric value when plotting ROC for Cox models.")
+    }
+    if (!requireNamespace("survival", quietly = TRUE)) stop("Package 'survival' is required for Cox ROC.")
+    if (!requireNamespace("pROC", quietly = TRUE)) stop("Package 'pROC' is required for ROC calculations.")
+    if (is.null(incremental_res$xdata) || is.null(incremental_res$ydata)) {
+      stop("xdata/ydata not available; rerun IncrementalAnalysis(store_data = TRUE) or pass data explicitly.")
+    }
+    if (is.null(incremental_res$details) || length(incremental_res$details) < max(m_vec)) {
+      stop("incremental_res$details not available; rerun IncrementalAnalysis() with default settings.")
+    }
+
+    xdf <- as.data.frame(incremental_res$xdata)
+    ydata <- incremental_res$ydata
+    if (!inherits(ydata, "Surv")) stop("ydata must be a survival::Surv object for Cox ROC.")
+    y_time <- as.numeric(ydata[, 1])
+    y_event <- as.integer(ydata[, 2])
+    if (anyNA(y_time) || anyNA(y_event)) stop("Surv outcome contains NA values.")
+    if (!all(y_event %in% c(0L, 1L))) stop("Surv event indicator must be coded 0/1.")
+
+    data <- cbind.data.frame(time = y_time, event = y_event, xdf)
+    predictor_order <- .predictor_order(incremental_res)
+    if (is.null(predictor_order) || length(predictor_order) < max(m_vec)) {
+      stop("Could not determine predictor order for requested m values.")
+    }
+
+    k_details <- NULL
+    if (!is.null(incremental_res$details[[1]]$beta_coefficients)) {
+      k_details <- nrow(incremental_res$details[[1]]$beta_coefficients)
+    }
+    k <- k_details %||% incremental_res$call$k %||% 100
+    test_ratio <- incremental_res$call$test_ratio %||% 0.3
+    roc_points <- incremental_res$call$roc_points %||% 101
+    ci_level <- incremental_res$call$ci_level %||% 0.95
+    fpr_grid <- seq(0, 1, length.out = roc_points)
+    spec_grid <- 1 - fpr_grid
+    alpha <- 1 - ci_level
+    q_lo <- alpha / 2
+    q_hi <- 1 - alpha / 2
+
+    set.seed(incremental_res$call$seed %||% 123)
+    split_list <- vector("list", k)
+    for (i in seq_len(k)) {
+      event_idx <- which(data$event == 1L)
+      cens_idx  <- which(data$event == 0L)
+
+      n_tr_event <- floor((1 - test_ratio) * length(event_idx))
+      n_tr_cens  <- floor((1 - test_ratio) * length(cens_idx))
+
+      if (n_tr_event < 1L || n_tr_cens < 1L) {
+        n <- nrow(data)
+        tr_idx <- sample.int(n, size = floor((1 - test_ratio) * n))
+      } else {
+        tr_idx <- c(sample(event_idx, size = n_tr_event),
+                    sample(cens_idx,  size = n_tr_cens))
+      }
+      split_list[[i]] <- tr_idx
+    }
+
+    fill_na_linear <- function(v) {
+      if (!anyNA(v)) return(v)
+      if (all(is.na(v))) return(v)
+      if (length(v) < 2L) return(v)
+      good <- !is.na(v)
+      if (sum(good) == 1L) {
+        v[!good] <- v[good][1]
+        return(v)
+      }
+      if (is.na(v[1])) v[1] <- v[which(good)[1]]
+      if (is.na(v[length(v)])) v[length(v)] <- v[rev(which(good))[1]]
+      na_idx <- which(is.na(v))
+      if (length(na_idx) > 0) {
+        v[!good] <- approx(x = which(good), y = v[good], xout = which(!good),
+                           method = "linear", rule = 2, ties = "ordered")$y
+      }
+      v
+    }
+    safe_roc_stats <- function(response, predictor) {
+      if (length(unique(response)) < 2) {
+        return(list(tpr = rep(NA_real_, length(fpr_grid))))
+      }
+      roc_obj <- try(
+        pROC::roc(response = response, predictor = predictor, quiet = TRUE, direction = "auto"),
+        silent = TRUE
+      )
+      if (inherits(roc_obj, "try-error")) {
+        return(list(tpr = rep(NA_real_, length(fpr_grid))))
+      }
+      sens_vec <- try(
+        pROC::coords(roc_obj, x = spec_grid, input = "specificity", ret = "sensitivity", transpose = FALSE),
+        silent = TRUE
+      )
+      if (inherits(sens_vec, "try-error")) {
+        sens_vec <- rep(NA_real_, length(fpr_grid))
+      } else {
+        sens_vec <- fill_na_linear(as.numeric(unlist(sens_vec, use.names = FALSE)))
+      }
+      list(tpr = sens_vec)
+    }
+
+    make_binary <- function(time_vec, event_vec, time_point) {
+      keep <- !(time_vec < time_point & event_vec == 0L)
+      y_bin <- as.integer(time_vec <= time_point & event_vec == 1L)
+      list(y = y_bin[keep], keep = keep)
+    }
+
+    ci_df_all <- do.call(rbind, lapply(seq_along(m_vec), function(i) {
+      m_i <- m_vec[i]
+      det <- incremental_res$details[[m_i]]
+      beta_mat <- det$beta_coefficients
+      if (is.null(beta_mat)) stop("beta_coefficients missing for requested m.")
+      if (is.null(colnames(beta_mat))) {
+        if (!is.null(det$variable_names)) {
+          colnames(beta_mat) <- det$variable_names
+        } else {
+          colnames(beta_mat) <- predictor_order[seq_len(ncol(beta_mat))]
+        }
+      }
+      beta_names <- colnames(beta_mat)
+      if (any(!beta_names %in% names(data))) {
+        missing_beta <- setdiff(beta_names, names(data))
+        stop("Predictors missing from xdata: ", paste(missing_beta, collapse = ", "))
+      }
+
+      n_splits <- nrow(beta_mat)
+      if (length(split_list) != n_splits) {
+        split_list_use <- split_list[seq_len(min(length(split_list), n_splits))]
+        beta_mat <- beta_mat[seq_len(nrow(beta_mat)), , drop = FALSE]
+      } else {
+        split_list_use <- split_list
+      }
+
+      tpr_list <- lapply(seq_along(split_list_use), function(j) {
+        tr_idx <- split_list_use[[j]]
+        train_data <- data[tr_idx, , drop = FALSE]
+        test_data  <- data[-tr_idx, , drop = FALSE]
+
+        target_data <- if (which == "test") test_data else train_data
+        bin <- make_binary(target_data$time, target_data$event, time)
+        if (length(bin$y) < 2L || length(unique(bin$y)) < 2L) {
+          return(rep(NA_real_, length(fpr_grid)))
+        }
+
+        beta_vec <- as.numeric(beta_mat[j, ])
+        if (all(is.na(beta_vec))) return(rep(NA_real_, length(fpr_grid)))
+        beta_vec[is.na(beta_vec)] <- 0
+
+        x_mat <- as.matrix(target_data[, beta_names, drop = FALSE])
+        lp <- as.numeric(x_mat %*% beta_vec)
+        lp <- lp[bin$keep]
+
+        safe_roc_stats(bin$y, lp)$tpr
+      })
+
+      tpr_mat <- do.call(rbind, tpr_list)
+      if (!is.null(tpr_mat)) tpr_mat <- tpr_mat[rowSums(is.na(tpr_mat)) < ncol(tpr_mat), , drop = FALSE]
+      if (!is.null(tpr_mat) && nrow(tpr_mat) > 0) {
+        tpr_mean <- colMeans(tpr_mat, na.rm = TRUE)
+        tpr_lo <- apply(tpr_mat, 2, stats::quantile, probs = q_lo, na.rm = TRUE, names = FALSE)
+        tpr_hi <- apply(tpr_mat, 2, stats::quantile, probs = q_hi, na.rm = TRUE, names = FALSE)
+      } else {
+        tpr_mean <- rep(NA_real_, length(fpr_grid))
+        tpr_lo <- rep(NA_real_, length(fpr_grid))
+        tpr_hi <- rep(NA_real_, length(fpr_grid))
+      }
+
+      data.frame(
+        n_vars = m_i,
+        fpr = fpr_grid,
+        tpr_mean = tpr_mean,
+        tpr_lo = tpr_lo,
+        tpr_hi = tpr_hi,
+        study = label_vec[i]
+      )
+    }))
+    if (!is.null(ci_df_all)) rownames(ci_df_all) <- NULL
+  }
+
+  if (is.null(ci_df_all)) stop("ROC data not available; binomial outcome required or provide time for Cox models.")
 
   df_list <- lapply(seq_along(m_vec), function(i) {
     df <- ci_df_all[ci_df_all$n_vars == m_vec[i], , drop = FALSE]
@@ -636,6 +848,64 @@ plot_incremental_survival <- function(incremental_res,
     m_select = m_select,
     ...
   )
+}
+
+# Metric plot ------------------------------------------------------------
+
+plot_incremental_metric <- function(incremental_res,
+                                    y_label = NULL,
+                                    title = "Incremental performance",
+                                    subtitle = NULL) {
+  if (is.null(incremental_res$summary)) {
+    stop("incremental_res must contain a summary table.")
+  }
+  summ <- incremental_res$summary
+  if (is.null(y_label)) {
+    y_label <- incremental_res$metric %||% incremental_res$call$metric %||% "Metric"
+  }
+  status_levels <- c("Not selected", "Selected", "Unpenalised (forced)")
+  summ$status <- factor(summ$status, levels = status_levels)
+  
+  legend_df <- data.frame(
+    variable = summ$variable[1],
+    metric_mean = summ$metric_mean[1],
+    metric_lo = summ$metric_lo[1],
+    metric_hi = summ$metric_hi[1],
+    status = factor(status_levels, levels = status_levels)
+  )
+
+  ggplot2::ggplot(summ, ggplot2::aes(x = variable, y = metric_mean, col = status)) +
+    ggplot2::geom_pointrange(
+      ggplot2::aes(ymin = metric_lo, ymax = metric_hi),
+      show.legend = FALSE
+    ) +
+    ggplot2::geom_point(
+      data = legend_df,
+      ggplot2::aes(x = variable, y = metric_mean, col = status),
+      inherit.aes = FALSE,
+      alpha = 0,
+      size = 0,
+      show.legend = TRUE
+    ) +
+    theme_react_safe() +
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1)) +
+    ggplot2::labs(
+      x = NULL,
+      y = y_label,
+      title = title,
+      subtitle = subtitle,
+      col = "Status"
+    ) +
+    ggplot2::scale_colour_manual(
+      values = c(
+        "Not selected" = "grey40",
+        "Selected" = "firebrick3",
+        "Unpenalised (forced)" = "forestgreen"
+      ),
+      limits = status_levels,
+      drop = FALSE
+    ) +
+    ggplot2::guides(colour = ggplot2::guide_legend(override.aes = list(alpha = 1, size = 2)))
 }
 
 
