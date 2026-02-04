@@ -1,5 +1,5 @@
 export(IncrementalAnalysis)
-export(fit_proteomic_model)
+export(fitUnivariableModel)
 export(CompareVarSelUniv)
 export(plot_incremental_metric)
 export(plot_incremental_roc)

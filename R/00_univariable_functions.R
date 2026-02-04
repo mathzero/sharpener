@@ -382,7 +382,7 @@ univariableScreen <- function(xdata,
 }
 
 #' Fit a single univariable model (wrapper)
-fit_proteomic_model <- function(xdata,
+fitUnivariableModel <- function(xdata,
                                 ydata,
                                 predictor,
                                 family = NULL,
@@ -475,7 +475,9 @@ runVariableSelectionAndUnivariable <- function(xdata,
 
 
 #' Compare variable selection proportions vs univariable significance
-CompareVarSelUniv <- function(data,
+CompareVarSelUniv <- function(data = NULL,
+                              stability = NULL,
+                              univariable = NULL,
                               pval_col = "p_value_min",
                               p_adj_col = "p_adj_min",
                               selprop_col = "selection_proportion",
@@ -486,6 +488,15 @@ CompareVarSelUniv <- function(data,
                               title = "Variable selection vs univariable",
                               subtitle = NULL,
                               text_size = 3) {
+  if (!is.null(data) && inherits(data, "variable_selection")) {
+    stability <- data
+    data <- NULL
+  }
+  if (!is.null(data) && inherits(data, "sharpener_univariable")) {
+    univariable <- data
+    data <- NULL
+  }
+
   if (is.list(data) && !is.null(data$comparison)) {
     if (is.null(selection_threshold) && !is.null(data$selection_threshold)) {
       selection_threshold <- data$selection_threshold
@@ -493,9 +504,63 @@ CompareVarSelUniv <- function(data,
     data <- data$comparison
   }
 
+  if (is.null(data) && !is.null(stability) && !is.null(univariable)) {
+    selprop_raw <- sharp::SelectionProportions(stability)
+    if (is.matrix(selprop_raw)) {
+      if (ncol(selprop_raw) == 1) {
+        selprop <- selprop_raw[, 1]
+        names(selprop) <- rownames(selprop_raw)
+      } else {
+        selprop <- colMeans(selprop_raw, na.rm = TRUE)
+        if (!is.null(colnames(selprop_raw))) names(selprop) <- colnames(selprop_raw)
+      }
+    } else {
+      selprop <- as.numeric(selprop_raw)
+      names(selprop) <- names(selprop_raw)
+    }
+    if (is.null(names(selprop)) || all(names(selprop) == "")) {
+      if (!is.null(colnames(stability$selprop))) {
+        names(selprop) <- colnames(stability$selprop)
+      } else if (!is.null(dimnames(stability$Beta)) && length(dimnames(stability$Beta)) >= 2) {
+        names(selprop) <- dimnames(stability$Beta)[[2]]
+      }
+    }
+
+    all_names <- names(selprop)
+    if (is.null(all_names) || all(all_names == "")) {
+      all_names <- paste0("V", seq_along(selprop))
+    }
+    selected <- .resolve_selected_vars(sharp::SelectedVariables(stability), all_names)
+
+    uni_summary <- if (is.list(univariable) && !is.null(univariable$summary)) {
+      univariable$summary
+    } else if (is.data.frame(univariable)) {
+      univariable
+    } else {
+      stop("univariable must be the output from univariableScreen() or a summary data.frame.")
+    }
+
+    data <- tibble::tibble(
+      predictor = all_names,
+      selection_proportion = as.numeric(selprop),
+      selected = predictor %in% selected
+    ) %>%
+      dplyr::left_join(uni_summary, by = "predictor")
+
+    if (is.null(selection_threshold)) {
+      selection_threshold <- .resolve_selection_threshold(stability)
+    }
+  }
+
+  if (is.null(data)) {
+    stop("Provide either a prepared data.frame, or both stability and univariable inputs.")
+  }
+
   required_cols <- c(selprop_col, pval_col, label_col)
   missing_cols <- setdiff(required_cols, names(data))
   if (length(missing_cols)) stop("Missing required columns: ", paste(missing_cols, collapse = ", "))
+
+  if (is.null(selection_threshold) || !is.finite(selection_threshold)) selection_threshold <- NA_real_
 
   if (p_adj_col %in% names(data)) {
     p_adj_vec <- data[[p_adj_col]]
