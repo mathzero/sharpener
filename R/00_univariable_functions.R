@@ -82,6 +82,33 @@
   as.character(selected_raw)
 }
 
+.resolve_selection_threshold <- function(stability) {
+  if (!inherits(stability, c("variable_selection", "structural_model"))) return(NA_real_)
+
+  thr <- NA_real_
+  argmax <- try(sharp::Argmax(stability), silent = TRUE)
+  if (!inherits(argmax, "try-error")) {
+    if (is.matrix(argmax) && "pi" %in% colnames(argmax)) {
+      thr <- as.numeric(argmax[1, "pi"])
+    } else if (is.numeric(argmax) && length(argmax) >= 2L) {
+      thr <- as.numeric(argmax[2])
+    }
+  }
+
+  if (!is.finite(thr)) {
+    argmax_id <- try(sharp::ArgmaxId(stability), silent = TRUE)
+    if (!inherits(argmax_id, "try-error") && !is.null(stability$params$pi_list)) {
+      thr <- as.numeric(stability$params$pi_list[argmax_id[1, 2]])
+    }
+  }
+
+  if (!is.finite(thr) && !is.null(stability$params$tau)) {
+    thr <- as.numeric(stability$params$tau)
+  }
+
+  thr
+}
+
 .build_model_frame <- function(xdata, ydata, covariates = NULL, data = NULL) {
   xdf <- as.data.frame(xdata)
   if (nrow(xdf) == 0L) stop("xdata has zero rows.")
@@ -428,7 +455,157 @@ runVariableSelectionAndUnivariable <- function(xdata,
   ) %>%
     dplyr::left_join(uni$summary, by = "predictor")
 
-  list(variable_selection = vs, univariable = uni, comparison = comp, encoded = prep$encoded)
+  sel_threshold <- .resolve_selection_threshold(vs)
+  plot_compare <- CompareVarSelUniv(
+    comp,
+    selection_threshold = sel_threshold,
+    significance_alpha = 0.05,
+    title = "Variable selection vs univariable"
+  )
+
+  list(
+    variable_selection = vs,
+    univariable = uni,
+    comparison = comp,
+    selection_threshold = sel_threshold,
+    comparison_plot = plot_compare,
+    encoded = prep$encoded
+  )
+}
+
+
+#' Compare variable selection proportions vs univariable significance
+CompareVarSelUniv <- function(data,
+                              pval_col = "p_value_min",
+                              p_adj_col = "p_adj_min",
+                              selprop_col = "selection_proportion",
+                              selected_col = "selected",
+                              label_col = "predictor",
+                              significance_alpha = 0.05,
+                              selection_threshold = NULL,
+                              title = "Variable selection vs univariable",
+                              subtitle = NULL,
+                              text_size = 3) {
+  if (is.list(data) && !is.null(data$comparison)) {
+    if (is.null(selection_threshold) && !is.null(data$selection_threshold)) {
+      selection_threshold <- data$selection_threshold
+    }
+    data <- data$comparison
+  }
+
+  required_cols <- c(selprop_col, pval_col, label_col)
+  missing_cols <- setdiff(required_cols, names(data))
+  if (length(missing_cols)) stop("Missing required columns: ", paste(missing_cols, collapse = ", "))
+
+  if (p_adj_col %in% names(data)) {
+    p_adj_vec <- data[[p_adj_col]]
+  } else {
+    p_adj_vec <- stats::p.adjust(data[[pval_col]], method = "fdr")
+  }
+  selected_exists <- selected_col %in% names(data)
+
+  df <- data %>%
+    dplyr::mutate(
+      logp = -log10(.data[[pval_col]]),
+      logp = dplyr::if_else(is.finite(logp), logp, NA_real_),
+      p_adj_calc = p_adj_vec,
+      sig_category = dplyr::case_when(
+        !is.na(.data[[pval_col]]) & .data[[pval_col]] < (significance_alpha / n()) ~ "FWER<0.05",
+        !is.na(p_adj_calc) & p_adj_calc < significance_alpha ~ "FDR<0.05",
+        !is.na(.data[[pval_col]]) & .data[[pval_col]] < significance_alpha ~ "p<0.05",
+        TRUE ~ "NS"
+      ),
+      sig_category = factor(sig_category, levels = c("FWER<0.05", "FDR<0.05", "p<0.05", "NS")),
+      label_txt = .data[[label_col]],
+      selprop_plot = .data[[selprop_col]],
+      selected_flag = if (selected_exists) .data[[selected_col]] else FALSE
+    )
+
+  df$logp[is.na(df$logp)] <- 0
+
+  df_label <- df %>%
+    dplyr::filter(selected_flag | (!is.na(p_adj_calc) & p_adj_calc < significance_alpha))
+
+  n_pred <- nrow(df)
+  fwer_thr <- if (n_pred > 0L) significance_alpha / n_pred else NA_real_
+  p_thr <- significance_alpha
+  fdr_thr <- significance_alpha
+
+  p <- ggplot2::ggplot(df, ggplot2::aes(x = selprop_plot, y = logp, color = sig_category)) +
+    ggplot2::geom_point(alpha = 0.8, size = 1.6) +
+    ggplot2::geom_point(
+      data = df %>% dplyr::filter(selected_flag),
+      ggplot2::aes(x = selprop_plot, y = logp),
+      inherit.aes = FALSE,
+      shape = 21,
+      size = 2.4,
+      stroke = 0.6,
+      colour = "black",
+      fill = NA_real_
+    ) +
+    ggplot2::geom_vline(
+      xintercept = selection_threshold,
+      linetype = "dotted",
+      linewidth = 0.3,
+      color = "firebrick3",
+      na.rm = TRUE
+    ) +
+    ggplot2::geom_hline(
+      yintercept = -log10(fwer_thr),
+      linetype = "dotted",
+      linewidth = 0.3,
+      color = "#E64B35",
+      na.rm = TRUE
+    ) +
+    ggplot2::geom_hline(
+      yintercept = -log10(fdr_thr),
+      linetype = "dotted",
+      linewidth = 0.3,
+      color = "orange2",
+      na.rm = TRUE
+    ) +
+    ggplot2::geom_hline(
+      yintercept = -log10(p_thr),
+      linetype = "dotted",
+      linewidth = 0.3,
+      color = "#3C5488",
+      na.rm = TRUE
+    ) +
+    ggplot2::scale_color_manual(values = c(
+      "NS" = "grey50",
+      "FWER<0.05" = "#E64B35",
+      "FDR<0.05" = "orange2",
+      "p<0.05" = "#3C5488"
+    ), limits = c("FWER<0.05", "FDR<0.05", "p<0.05", "NS"), drop = FALSE) +
+    ggplot2::labs(
+      x = "Selection proportion (LASSO stability)",
+      y = "-log10(p) (univariable)",
+      color = NULL,
+      title = title,
+      subtitle = subtitle
+    ) +
+    theme_react_safe()
+
+  if (nrow(df_label) > 0) {
+    if (requireNamespace("ggrepel", quietly = TRUE)) {
+      p <- p + ggrepel::geom_text_repel(
+        data = df_label,
+        ggplot2::aes(x = selprop_plot, y = logp, label = label_txt),
+        size = text_size,
+        show.legend = FALSE
+      )
+    } else {
+      p <- p + ggplot2::geom_text(
+        data = df_label,
+        ggplot2::aes(x = selprop_plot, y = logp, label = label_txt),
+        size = text_size,
+        vjust = -0.5,
+        show.legend = FALSE
+      )
+    }
+  }
+
+  p
 }
 
 

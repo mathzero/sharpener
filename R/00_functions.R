@@ -624,6 +624,7 @@ plot_incremental_roc <- function(incremental_res,
   fam <- incremental_res$call$family %||% if (!is.null(incremental_res$ydata) && inherits(incremental_res$ydata, "Surv")) "cox" else "binomial"
   if (fam %in% c("coxph", "survival")) fam <- "cox"
 
+  timepoint_note <- NULL
   m_vec <- .resolve_m(incremental_res, m, m_select)
   label_vec <- .labels_for_m(
     m_vec,
@@ -656,6 +657,18 @@ plot_incremental_roc <- function(incremental_res,
     y_event <- as.integer(ydata[, 2])
     if (anyNA(y_time) || anyNA(y_event)) stop("Surv outcome contains NA values.")
     if (!all(y_event %in% c(0L, 1L))) stop("Surv event indicator must be coded 0/1.")
+
+    keep_all <- !(y_time < time & y_event == 0L)
+    y_bin_all <- as.integer(y_time <= time & y_event == 1L)
+    n_case <- sum(y_bin_all[keep_all] == 1L, na.rm = TRUE)
+    n_control <- sum(y_bin_all[keep_all] == 0L, na.rm = TRUE)
+    n_excluded <- sum(!keep_all)
+    time_label <- format(time, digits = 4, scientific = FALSE)
+    excl_txt <- if (n_excluded > 0L) sprintf(" (excluded censored before time: %d)", n_excluded) else ""
+    timepoint_note <- sprintf(
+      "ROC of Cox linear predictor at time = %s.\nCases: %d, non-cases: %d%s",
+      time_label, n_case, n_control, excl_txt
+    )
 
     data <- cbind.data.frame(time = y_time, event = y_event, xdf)
     predictor_order <- .predictor_order(incremental_res)
@@ -833,7 +846,17 @@ plot_incremental_roc <- function(incremental_res,
     subtitle <- label_vec[1]
   }
 
-  plotROC_from_ci(ci_df, title = title, subtitle = subtitle, ...)
+  g <- plotROC_from_ci(ci_df, title = title, subtitle = subtitle, ...)
+  if (!is.null(timepoint_note)) {
+    g <- g + ggplot2::annotate(
+      "label",
+      x = 0.02, y = 0.02,
+      label = timepoint_note,
+      hjust = 0, vjust = 0,
+      size = 3, label.size = 0.2
+    )
+  }
+  g
 }
 
 plot_incremental_survival <- function(incremental_res,
@@ -1173,7 +1196,8 @@ plotROC_from_ci <- function(ci_df,
                             ci_label = "95% CI",
                             digits = 3,
                             annotate_single = FALSE,
-                            annotate_pos = c(0.65, 0.15)) {
+                            annotate_pos = c(0.65, 0.15),
+                            legend_wrap = NULL) {
   stopifnot(all(c("fpr", "tpr_mean") %in% names(ci_df)))
 
   trap_auc <- function(x, y) {
@@ -1203,12 +1227,15 @@ plotROC_from_ci <- function(ci_df,
         !is.na(auc_lo) & !is.na(auc_hi),
         sprintf("%s  AUC %.3f [%s %.3f, %.3f]", study, round(auc, digits), ci_label, round(auc_lo, digits), round(auc_hi, digits)),
         sprintf("%s  AUC %.3f", study, round(auc, digits))
-      )
+      ),
+      lab_wrapped = if (is.null(legend_wrap)) lab else vapply(lab, function(x) {
+        paste(strwrap(x, width = legend_wrap), collapse = "\n")
+      }, character(1))
     )
 
   df_plot <- df %>%
     dplyr::left_join(stats, by = "study") %>%
-    dplyr::mutate(grp_label = factor(lab, levels = stats$lab)) %>%
+    dplyr::mutate(grp_label = factor(lab_wrapped, levels = stats$lab_wrapped)) %>%
     dplyr::mutate(tpr_mean = ifelse(fpr == 0.00, 0, tpr_mean))
 
   g <- ggplot2::ggplot(df_plot, ggplot2::aes(x = fpr)) +

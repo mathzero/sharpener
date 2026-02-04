@@ -90,6 +90,9 @@ both_bin$comparison %>%
 
 # Volcano plot from univariable results
 plotVolcano(both_bin$univariable, title = "Univariable screen (binomial)")
+
+# Compare variable selection vs univariable significance
+both_bin$comparison_plot
 ```
 
 ## Cox survival example

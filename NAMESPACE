@@ -1,5 +1,6 @@
 export(IncrementalAnalysis)
 export(fit_proteomic_model)
+export(CompareVarSelUniv)
 export(plot_incremental_metric)
 export(plot_incremental_roc)
 export(plot_incremental_survival)
